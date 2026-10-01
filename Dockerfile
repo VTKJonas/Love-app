@@ -1,49 +1,55 @@
 FROM php:8.4-apache
 
-# Activer mod_rewrite pour Laravel
-RUN a2enmod rewrite
+# Activer mod_rewrite
+RUN a2enmod rewrite headers
 
-# Installer les extensions PHP nécessaires
+# Dépendances système
 RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    zip \
-    unzip \
-    libsqlite3-dev \
+    git curl zip unzip libsqlite3-dev \
     && docker-php-ext-install pdo pdo_sqlite \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Installer Node.js 20
+# Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Installer Composer
+# Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www/html
 
-# Copier les fichiers de dépendances
+# Dépendances PHP
 COPY composer.json composer.lock ./
 RUN composer install --no-dev --optimize-autoloader --no-interaction --no-scripts
 
+# Dépendances Node + build
 COPY package.json package-lock.json ./
 RUN npm ci
-
-# Copier tout le reste
 COPY . .
-
-# Build les assets Vite
 RUN npm run build && rm -rf node_modules
 
-# Permissions
+# Permissions Laravel
 RUN chown -R www-data:www-data /var/www/html \
     && chmod -R 775 storage bootstrap/cache
 
-# Préparer la base SQLite
-RUN mkdir -p /tmp && touch /tmp/database.sqlite && chown www-data:www-data /tmp/database.sqlite
+# SQLite
+RUN touch /tmp/database.sqlite && chown www-data:www-data /tmp/database.sqlite
 
-# Variables d'environnement par défaut
+# Config Apache
+RUN echo '<VirtualHost *:${PORT}>\n\
+    DocumentRoot /var/www/html/public\n\
+    <Directory /var/www/html/public>\n\
+        AllowOverride All\n\
+        Options -Indexes +FollowSymLinks\n\
+        Require all granted\n\
+    </Directory>\n\
+</VirtualHost>' > /etc/apache2/sites-available/000-default.conf
+
+# Port Apache dynamique
+RUN echo 'Listen ${PORT}' > /etc/apache2/ports.conf
+
+# Variables par défaut
 ENV APP_ENV=production
 ENV APP_DEBUG=false
 ENV DB_CONNECTION=sqlite
@@ -51,38 +57,12 @@ ENV DB_DATABASE=/tmp/database.sqlite
 ENV SESSION_DRIVER=file
 ENV CACHE_STORE=file
 ENV LOG_CHANNEL=stderr
+ENV PORT=80
 
-# Script de démarrage — Apache écoute sur $PORT injecté par Railway
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-# Utiliser le port injecté par Railway (défaut 80)\n\
-export PORT=${PORT:-80}\n\
-\n\
-# Mettre à jour le port Apache\n\
-sed -i "s/Listen 80/Listen $PORT/" /etc/apache2/ports.conf\n\
-sed -i "s/<VirtualHost \*:80>/<VirtualHost *:$PORT>/" /etc/apache2/sites-available/000-default.conf\n\
-\n\
-# Préparer Laravel\n\
-php artisan config:clear\n\
-php artisan route:clear\n\
-php artisan view:clear\n\
-php artisan migrate --force --no-interaction\n\
-\n\
-# Démarrer Apache\n\
-apache2-foreground' > /start.sh && chmod +x /start.sh
-
-# Config Apache — pointer sur public/
-RUN echo '<VirtualHost *:80>\n\
-    DocumentRoot /var/www/html/public\n\
-    <Directory /var/www/html/public>\n\
-        AllowOverride All\n\
-        Require all granted\n\
-    </Directory>\n\
-    ErrorLog ${APACHE_LOG_DIR}/error.log\n\
-    CustomLog ${APACHE_LOG_DIR}/access.log combined\n\
-</VirtualHost>' > /etc/apache2/sites-available/000-default.conf
+# Script de démarrage
+COPY docker-start.sh /start.sh
+RUN chmod +x /start.sh
 
 EXPOSE 80
 
-CMD ["/bin/bash", "/start.sh"]
+CMD ["/start.sh"]
