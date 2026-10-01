@@ -43,6 +43,35 @@ RUN chown -R www-data:www-data /var/www/html \
 # Préparer la base SQLite
 RUN mkdir -p /tmp && touch /tmp/database.sqlite && chown www-data:www-data /tmp/database.sqlite
 
+# Variables d'environnement par défaut
+ENV APP_ENV=production
+ENV APP_DEBUG=false
+ENV DB_CONNECTION=sqlite
+ENV DB_DATABASE=/tmp/database.sqlite
+ENV SESSION_DRIVER=file
+ENV CACHE_STORE=file
+ENV LOG_CHANNEL=stderr
+
+# Script de démarrage — Apache écoute sur $PORT injecté par Railway
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+# Utiliser le port injecté par Railway (défaut 80)\n\
+export PORT=${PORT:-80}\n\
+\n\
+# Mettre à jour le port Apache\n\
+sed -i "s/Listen 80/Listen $PORT/" /etc/apache2/ports.conf\n\
+sed -i "s/<VirtualHost \*:80>/<VirtualHost *:$PORT>/" /etc/apache2/sites-available/000-default.conf\n\
+\n\
+# Préparer Laravel\n\
+php artisan config:clear\n\
+php artisan route:clear\n\
+php artisan view:clear\n\
+php artisan migrate --force --no-interaction\n\
+\n\
+# Démarrer Apache\n\
+apache2-foreground' > /start.sh && chmod +x /start.sh
+
 # Config Apache — pointer sur public/
 RUN echo '<VirtualHost *:80>\n\
     DocumentRoot /var/www/html/public\n\
@@ -54,23 +83,6 @@ RUN echo '<VirtualHost *:80>\n\
     CustomLog ${APACHE_LOG_DIR}/access.log combined\n\
 </VirtualHost>' > /etc/apache2/sites-available/000-default.conf
 
-# Variables d'environnement par défaut
-ENV APP_ENV=production
-ENV APP_DEBUG=false
-ENV DB_CONNECTION=sqlite
-ENV DB_DATABASE=/tmp/database.sqlite
-ENV SESSION_DRIVER=file
-ENV CACHE_STORE=file
-ENV LOG_CHANNEL=stderr
-
-# Script de démarrage
-RUN echo '#!/bin/bash\n\
-php artisan config:clear\n\
-php artisan route:clear\n\
-php artisan view:clear\n\
-php artisan migrate --force --no-interaction\n\
-apache2-foreground' > /start.sh && chmod +x /start.sh
-
 EXPOSE 80
 
-CMD ["/start.sh"]
+CMD ["/bin/bash", "/start.sh"]
